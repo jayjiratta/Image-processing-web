@@ -2,7 +2,8 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-
+import requests
+import io
 import matplotlib.pyplot as plt
 
 st.set_page_config(layout="wide")
@@ -17,6 +18,8 @@ processing = st.sidebar.selectbox(
 
 if processing == "Gray Scale":
     gray_brightness = st.sidebar.slider("Gray Brightness", -100, 100, 0)
+elif processing == "Invert":
+    invert_alpha = st.sidebar.slider("Invert Intensity (%)", 0, 100, 100)
 elif processing == "Blur":
     blur_ksize = st.sidebar.slider("Blur Kernel Size", 1, 31, 5, step=2)
 elif processing == "Canny Edge":
@@ -25,12 +28,13 @@ elif processing == "Canny Edge":
 elif processing == "Sobel Edge":
     sobel_ksize = st.sidebar.slider("Sobel Kernel Size", 1, 7, 3, step=2)
 elif processing == "Prewitt Edge":
-    prewitt_ksize = st.sidebar.slider("Prewitt Kernel Size (odd)", 1, 7, 3, step=2)
+    prewitt_ksize = st.sidebar.slider("Prewitt Kernel Size", 1, 7, 3, step=2)
+    
 
 # Camera selection
 source = st.sidebar.radio("Camera Source", ["Webcam", "URL"])
 if source == "URL":
-    cam_url = st.sidebar.text_input("Stream URL", "http://...")
+    cam_url = st.sidebar.text_input("Image URL", "http://...")
 else:
     cam_url = 0
 
@@ -48,11 +52,16 @@ def process_image(img):
     if processing == "Gray Scale":
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         if 'gray_brightness' in globals():
-            # ปรับ brightness
+            # brightness
             gray = np.clip(gray.astype(np.int16) + gray_brightness, 0, 255).astype(np.uint8)
         return gray
     elif processing == "Invert":
-        return cv2.bitwise_not(img)
+        if 'invert_alpha' in globals() and invert_alpha < 100:
+            inv = cv2.bitwise_not(img)
+            alpha = invert_alpha / 100.0
+            return cv2.addWeighted(inv, alpha, img, 1 - alpha, 0)
+        else:
+            return cv2.bitwise_not(img)
     elif processing == "Blur":
         return cv2.GaussianBlur(img, (blur_ksize, blur_ksize), 0)
     elif processing == "Canny Edge":
@@ -66,7 +75,7 @@ def process_image(img):
         return sobel
     elif processing == "Prewitt Edge":
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # สร้าง kernel ขนาด prewitt_ksize แบบ odd
+        # create kernel from prewitt_ksize size (odd)
         k = prewitt_ksize if 'prewitt_ksize' in globals() else 3
         kernelx = np.zeros((k, k), dtype=np.float32)
         kernelx[:, 0] = 1
@@ -111,30 +120,49 @@ if stop_btn:
     st.session_state.stop = True
 
 if not st.session_state.stop and start_btn:
-    cap = cv2.VideoCapture(cam_url)
     frame_placeholder = col1.empty()
     proc_placeholder = col2.empty()
     hist_placeholder = st.empty()
-    while cap.isOpened() and not st.session_state.stop:
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("Failed to grab frame.")
-            break
-        st.session_state.frame = frame.copy()
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_placeholder.image(frame_rgb, channels="RGB", caption="Webcam (RGB)")
-        proc_img = process_image(frame)
-        if len(proc_img.shape) == 2:
-            proc_img_disp = proc_img
-        else:
-            proc_img_disp = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
-        proc_placeholder.image(proc_img_disp, caption="Processed Image")
-        hist_placeholder.empty()
-        plot_histogram(proc_img)
-        # ใช้ปุ่ม stop_btn ที่สร้างไว้ด้านบนแทน ไม่ต้องสร้างปุ่มซ้ำใน loop
-        if st.session_state.stop:
-            break
-    cap.release()
+    if source == "Webcam":
+        cap = cv2.VideoCapture(cam_url)
+        while cap.isOpened() and not st.session_state.stop:
+            ret, frame = cap.read()
+            if not ret:
+                st.warning("Failed to grab frame.")
+                break
+            st.session_state.frame = frame.copy()
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(frame_rgb, channels="RGB", caption="Webcam (RGB)")
+            proc_img = process_image(frame)
+            if len(proc_img.shape) == 2:
+                proc_img_disp = proc_img
+            else:
+                proc_img_disp = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
+            proc_placeholder.image(proc_img_disp, caption="Processed Image")
+            hist_placeholder.empty()
+            plot_histogram(proc_img)
+            if st.session_state.stop:
+                break
+        cap.release()
+    else:
+        try:
+            resp = requests.get(cam_url, timeout=5)
+            img_pil = Image.open(io.BytesIO(resp.content)).convert('RGB')
+            frame = np.array(img_pil)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            st.session_state.frame = frame.copy()
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(frame_rgb, channels="RGB", caption="Image (RGB)")
+            proc_img = process_image(frame)
+            if len(proc_img.shape) == 2:
+                proc_img_disp = proc_img
+            else:
+                proc_img_disp = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
+            proc_placeholder.image(proc_img_disp, caption="Processed Image")
+            hist_placeholder.empty()
+            plot_histogram(proc_img)
+        except Exception as e:
+            st.warning(f"Failed to load image from URL: {e}")
 elif st.session_state.frame is not None:
     frame = st.session_state.frame
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
